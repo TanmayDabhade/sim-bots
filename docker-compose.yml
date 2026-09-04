@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: arena
+      POSTGRES_USER: arena
+      POSTGRES_PASSWORD: arena
+    ports:
+      - "5433:5432"
+    volumes:
+      - arena-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arena -d arena"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://arena:arena@db:5432/arena
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-demo}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      QWEN_MODEL_ID: ${QWEN_MODEL_ID:-qwen/qwen3-8b}
+      GEMMA_MODEL_ID: ${GEMMA_MODEL_ID:-google/gemma-3-12b-it}
+      PHI_MODEL_ID: ${PHI_MODEL_ID:-microsoft/phi-4}
+      LLAMA_MODEL_ID: ${LLAMA_MODEL_ID:-meta-llama/llama-3.1-8b-instruct}
+      MARKET_PERIOD: ${MARKET_PERIOD:-1mo}
+      MARKET_INTERVAL: ${MARKET_INTERVAL:-15m}
+      ENABLE_SCHEDULER: ${ENABLE_SCHEDULER:-false}
+      ARENA_INTERVAL_MINUTES: ${ARENA_INTERVAL_MINUTES:-15}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  arena-postgres:
+

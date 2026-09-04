@@ -1,0 +1,26 @@
+Metadata-Version: 2.4
+Name: ai-market-arena-backend
+Version: 0.1.0
+Summary: FastAPI backend for the AI Market Arena
+Requires-Python: >=3.12
+Requires-Dist: alembic<2,>=1.16
+Requires-Dist: apscheduler<4,>=3.11
+Requires-Dist: fastapi<1,>=0.116
+Requires-Dist: httpx<1,>=0.28
+Requires-Dist: numpy<3,>=2.1
+Requires-Dist: pandas<4,>=2.2
+Requires-Dist: pandas-market-calendars<6,>=5
+Requires-Dist: psycopg[binary]<4,>=3.2
+Requires-Dist: pydantic<3,>=2.11
+Requires-Dist: pydantic-settings<3,>=2.10
+Requires-Dist: sqlalchemy<3,>=2.0
+Requires-Dist: tenacity<10,>=9
+Requires-Dist: typer<1,>=0.16
+Requires-Dist: uvicorn[standard]<1,>=0.35
+Requires-Dist: yfinance<2,>=0.2.65
+Provides-Extra: dev
+Requires-Dist: aiosqlite<1,>=0.21; extra == "dev"
+Requires-Dist: mypy<2,>=1.17; extra == "dev"
+Requires-Dist: pytest<10,>=8.4; extra == "dev"
+Requires-Dist: pytest-asyncio<2,>=1.1; extra == "dev"
+Requires-Dist: ruff<1,>=0.12; extra == "dev"

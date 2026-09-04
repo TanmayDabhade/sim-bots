@@ -1,0 +1,15 @@
+.env
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+backend/.venv/
+backend/*.db
+frontend/node_modules/
+frontend/.next/
+frontend/coverage/
+npm-debug.log*
+
+docs
