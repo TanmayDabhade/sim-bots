@@ -152,6 +152,102 @@ async def test_openrouter_failure_becomes_recorded_hold() -> None:
 
 
 @pytest.mark.asyncio
+async def test_openrouter_retries_truncation_with_more_room_and_a_fresh_prompt() -> None:
+    requests: list[dict] = []
+    truncated = '{"action":"BUY","reason":"' + 'unfinished explanation ' * 80
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        content = truncated if len(requests) == 1 else json.dumps({
+            "action": "BUY", "symbol": "NVDA", "target_weight": 0.15,
+            "confidence": 0.74, "reason": "Relative momentum is strongest.",
+        })
+        return httpx.Response(200, json={"choices": [{
+            "finish_reason": "length" if len(requests) == 1 else "stop",
+            "message": {"content": content},
+        }]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await OpenRouterModelProvider("secret", client=client).decide(
+            profile(), snapshot(), portfolio(),
+        )
+
+    assert result.error is None
+    assert result.decision.action == "BUY"
+    assert len(requests) == 2
+    assert requests[0]["max_tokens"] >= 1024
+    assert requests[1]["max_tokens"] > requests[0]["max_tokens"]
+    assert truncated not in json.dumps(requests[1]["messages"])
+    assert all(message["role"] != "assistant" for message in requests[1]["messages"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", [
+    '{"action":"BUY","reason":"cut off',
+    json.dumps({
+        "action": "BUY", "symbol": "NVDA", "target_weight": 0.15,
+        "confidence": 0.74, "reason": "Momentum is strongest.",
+    }),
+])
+async def test_openrouter_never_accepts_a_length_limited_response(content: str) -> None:
+    calls = 0
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"choices": [{
+            "finish_reason": "length", "message": {"content": content},
+        }]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await OpenRouterModelProvider("secret", client=client).decide(
+            profile(), snapshot(), portfolio(),
+        )
+
+    assert calls == 2
+    assert result.decision.action == "HOLD"
+    assert result.error == "Hosted model response exceeded its output limit after one retry."
+
+
+@pytest.mark.asyncio
+async def test_openrouter_invalid_retry_reports_a_short_error_without_raw_output() -> None:
+    calls = 0
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"choices": [{
+            "finish_reason": "stop",
+            "message": {"content": '"> // Corrected JSON response: still not valid'},
+        }]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await OpenRouterModelProvider("secret", client=client).decide(
+            profile(), snapshot(), portfolio(),
+        )
+
+    assert calls == 2
+    assert result.decision.action == "HOLD"
+    assert result.error == "Hosted model returned an invalid decision after one retry."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("choices", [[None], []])
+async def test_openrouter_invalid_choices_become_hold(choices: list) -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": choices})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await OpenRouterModelProvider("secret", client=client).decide(
+            profile(), snapshot(), portfolio(),
+        )
+
+    assert result.decision.action == "HOLD"
+    assert result.error == "Hosted model returned an invalid decision after one retry."
+
+
+@pytest.mark.asyncio
 async def test_demo_models_produce_valid_model_specific_decisions() -> None:
     provider = DemoModelProvider()
 

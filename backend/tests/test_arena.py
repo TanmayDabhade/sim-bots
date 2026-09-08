@@ -43,8 +43,8 @@ def market_snapshot() -> MarketSnapshot:
 class FakeMarketProvider:
     async def get_snapshot(self, symbols: list[str], period: str, interval: str) -> MarketSnapshot:
         assert "SPY" in symbols
-        assert period == "1mo"
-        assert interval == "15m"
+        assert period == "5d"
+        assert interval == "1m"
         return market_snapshot()
 
 
@@ -64,7 +64,10 @@ def session_factory() -> sessionmaker[Session]:
 @pytest.mark.asyncio
 async def test_one_cycle_persists_four_decisions_trades_and_equity_points() -> None:
     factory = session_factory()
-    service = ArenaService(factory, FakeMarketProvider(), DemoModelProvider())
+    service = ArenaService(
+        factory, FakeMarketProvider(), DemoModelProvider(),
+        Settings(_env_file=None, market_period="5d", market_interval="1m", max_daily_trades=390),
+    )
 
     result = await service.run_once(datetime(2026, 9, 1, 14, 0, tzinfo=UTC), mode="demo")
 
@@ -90,7 +93,10 @@ async def test_one_cycle_persists_four_decisions_trades_and_equity_points() -> N
 @pytest.mark.asyncio
 async def test_duplicate_cycle_timestamp_is_rejected() -> None:
     factory = session_factory()
-    service = ArenaService(factory, FakeMarketProvider(), DemoModelProvider())
+    service = ArenaService(
+        factory, FakeMarketProvider(), DemoModelProvider(),
+        Settings(_env_file=None, market_period="5d", market_interval="1m", max_daily_trades=390),
+    )
     timestamp = datetime(2026, 9, 1, 14, 0, tzinfo=UTC)
     await service.run_once(timestamp, mode="demo")
 

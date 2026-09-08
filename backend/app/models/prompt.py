@@ -15,8 +15,9 @@ position; SELL must reduce an existing position. A target of zero exits it.
 Changes smaller than 2% of portfolio equity are rejected. Simulated execution
 applies 0.03% adverse slippage. Observe the supplied daily trade budget.
 For HOLD, set symbol and target_weight to null. Return only JSON matching
-decision_schema, including confidence between 0 and 1 and a reason under 500
-characters that cites the supplied evidence."""
+decision_schema, including confidence between 0 and 1 and a short reason under
+240 characters that cites the supplied evidence. Return one complete JSON object
+with no comments, markdown, or text before or after it."""
 
 
 def build_messages(snapshot: MarketSnapshot, portfolio: PortfolioState) -> list[dict[str, str]]:

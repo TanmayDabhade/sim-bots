@@ -5,7 +5,6 @@ import time
 from typing import Any, Protocol
 
 import httpx
-from pydantic import ValidationError
 
 from app.models.prompt import build_messages
 from app.schemas import (
@@ -55,6 +54,21 @@ def _content_as_json(content: Any) -> str:
     return stripped
 
 
+class _TruncatedModelResponse(ValueError):
+    pass
+
+
+def _decision_from_response(body: dict[str, Any]) -> ModelDecision:
+    choice = body["choices"][0]
+    if not isinstance(choice, dict):
+        raise ValueError("model response choice is not an object")
+    # Never execute an answer the provider says it did not finish, even if its
+    # content happens to be syntactically valid JSON.
+    if choice.get("finish_reason") == "length":
+        raise _TruncatedModelResponse("model output reached its token limit")
+    return ModelDecision.model_validate_json(_content_as_json(choice["message"]["content"]))
+
+
 class OpenRouterModelProvider:
     def __init__(
         self,
@@ -66,7 +80,9 @@ class OpenRouterModelProvider:
         self._base_url = base_url.rstrip("/")
         self._client = client or httpx.AsyncClient(timeout=60.0)
 
-    async def _request(self, model_id: str, messages: list[dict[str, str]]) -> dict[str, Any]:
+    async def _request(
+        self, model_id: str, messages: list[dict[str, str]], max_tokens: int = 1024,
+    ) -> dict[str, Any]:
         response = await self._client.post(
             f"{self._base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self._api_key}"},
@@ -74,7 +90,7 @@ class OpenRouterModelProvider:
                 "model": model_id,
                 "messages": messages,
                 "temperature": 0,
-                "max_tokens": 300,
+                "max_tokens": max_tokens,
                 # All four configured OpenRouter models support JSON mode. Some
                 # providers do not enforce JSON Schema, so validation remains
                 # local and malformed responses receive one repair attempt.
@@ -100,24 +116,28 @@ class OpenRouterModelProvider:
         started = time.perf_counter()
         messages = build_messages(snapshot, portfolio)
         try:
-            body = await self._request(profile.provider_model_id, messages)
-            content = body["choices"][0]["message"]["content"]
             try:
-                decision = ModelDecision.model_validate_json(_content_as_json(content))
-            except (ValidationError, ValueError, json.JSONDecodeError):
+                body = await self._request(profile.provider_model_id, messages)
+                decision = _decision_from_response(body)
+            except (ValueError, KeyError, TypeError, IndexError):
+                # Start from the original state so malformed prose and partial
+                # JSON do not become an assistant example for the next answer.
                 repair_messages = [
-                    *messages,
-                    {"role": "assistant", "content": str(content)},
+                    messages[0],
                     {
                         "role": "user",
-                        "content": (
-                            "Repair the response. Return only valid JSON matching the schema."
+                        "content": messages[1]["content"] + (
+                            "\n\nThe previous response was incomplete or invalid. "
+                            "Make the decision again from the state above. Return exactly "
+                            "one complete JSON object matching decision_schema. Use a short "
+                            "reason under 240 characters. No comments, markdown, or preamble."
                         ),
                     },
                 ]
-                body = await self._request(profile.provider_model_id, repair_messages)
-                content = body["choices"][0]["message"]["content"]
-                decision = ModelDecision.model_validate_json(_content_as_json(content))
+                body = await self._request(
+                    profile.provider_model_id, repair_messages, max_tokens=2048,
+                )
+                decision = _decision_from_response(body)
 
             usage = body.get("usage") or {}
             return ModelCallResult(
@@ -133,7 +153,21 @@ class OpenRouterModelProvider:
                 error="hosted model request timed out",
                 latency_ms=elapsed,
             )
-        except (httpx.HTTPError, KeyError, TypeError, ValidationError, ValueError) as exc:
+        except _TruncatedModelResponse:
+            elapsed = int((time.perf_counter() - started) * 1000)
+            return _hold(
+                "The hosted model response was cut off, so no trade was placed.",
+                error="Hosted model response exceeded its output limit after one retry.",
+                latency_ms=elapsed,
+            )
+        except (KeyError, TypeError, ValueError, IndexError):
+            elapsed = int((time.perf_counter() - started) * 1000)
+            return _hold(
+                "The hosted model returned an unusable response, so no trade was placed.",
+                error="Hosted model returned an invalid decision after one retry.",
+                latency_ms=elapsed,
+            )
+        except httpx.HTTPError as exc:
             elapsed = int((time.perf_counter() - started) * 1000)
             return _hold(
                 "The hosted model returned an unusable response, so no trade was placed.",
