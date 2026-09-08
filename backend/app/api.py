@@ -234,6 +234,7 @@ def create_app(
             "status": "ready",
             "database": "connected",
             "modelProvider": active_settings.model_provider,
+            "hostedInferenceConfigured": bool(active_settings.openrouter_api_key),
             "marketProvider": "yfinance",
             "schedulerEnabled": active_settings.enable_scheduler,
             "intervalMinutes": active_settings.arena_interval_minutes,

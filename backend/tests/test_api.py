@@ -54,7 +54,9 @@ class FakeMarketProvider:
         return snapshot()
 
 
-def app_client(admin_token: str = "", enable_scheduler: bool = False) -> TestClient:
+def app_client(
+    admin_token: str = "", enable_scheduler: bool = False, openrouter_api_key: str = ""
+) -> TestClient:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -67,6 +69,7 @@ def app_client(admin_token: str = "", enable_scheduler: bool = False) -> TestCli
         model_provider="demo",
         admin_token=admin_token,
         enable_scheduler=enable_scheduler,
+        openrouter_api_key=openrouter_api_key,
     )
     app = create_app(
         settings=settings,
@@ -85,6 +88,15 @@ def test_health_and_readiness_report_demo_mode() -> None:
     assert readiness.status_code == 200
     assert readiness.json()["status"] == "ready"
     assert readiness.json()["modelProvider"] == "demo"
+
+
+def test_readiness_reports_hosted_key_presence_without_revealing_it() -> None:
+    with app_client() as client:
+        assert client.get("/ready").json()["hostedInferenceConfigured"] is False
+    with app_client(openrouter_api_key="test-secret-value") as client:
+        response = client.get("/ready")
+        assert response.json()["hostedInferenceConfigured"] is True
+        assert "test-secret-value" not in response.text
 
 
 def test_empty_arena_explains_disabled_scheduler_and_demo_provider() -> None:
