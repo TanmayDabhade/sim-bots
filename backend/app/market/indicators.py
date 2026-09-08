@@ -55,13 +55,16 @@ def build_symbol_snapshot(frame: pd.DataFrame, symbol: str) -> SymbolSnapshot:
     if usable.empty:
         raise ValueError(f"{symbol} has no usable bars")
     close = usable["Close"].astype(float)
+    # Infer bar duration without counting overnight/weekend gaps as trading time.
+    spacing = pd.Series(pd.DatetimeIndex(usable.index)).diff().dropna().median()
+    minutes = max(1.0, spacing.total_seconds() / 60) if pd.notna(spacing) else 15.0
 
     return SymbolSnapshot(
         symbol=symbol,
         as_of=_as_utc(usable.index[-1]),
         price=float(close.iloc[-1]),
-        change_1d=_change(close, 26),
-        change_1h=_change(close, 4),
+        change_1d=_change(close, max(1, round(390 / minutes))),
+        change_1h=_change(close, max(1, round(60 / minutes))),
         volume=max(0, int(usable["Volume"].iloc[-1])),
         sma_20=_sma(close, 20),
         sma_50=_sma(close, 50),

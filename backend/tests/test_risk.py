@@ -123,3 +123,15 @@ def test_hold_never_creates_an_order() -> None:
     assert result.approved is False
     assert result.intent is None
     assert result.reason == "model chose HOLD"
+
+
+def test_configurable_daily_limit_allows_trading_beyond_five_orders() -> None:
+    decision = ModelDecision(
+        action="BUY", symbol="NVDA", target_weight=0.1, confidence=0.8, reason="New setup."
+    )
+    assert evaluate_decision(
+        decision, empty_portfolio(), 100.0, 5, max_daily_trades=390
+    ).approved
+    assert not evaluate_decision(
+        decision, empty_portfolio(), 100.0, 390, max_daily_trades=390
+    ).approved

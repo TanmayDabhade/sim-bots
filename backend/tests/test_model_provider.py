@@ -65,6 +65,11 @@ async def test_openrouter_returns_validated_decision_and_usage() -> None:
         assert body["model"] == "vendor/qwen"
         assert body["temperature"] == 0
         assert body["response_format"] == {"type": "json_object"}
+        payload = json.loads(body["messages"][1]["content"].split("\n", 1)[1])
+        schema = payload["decision_schema"]
+        assert {"action", "confidence", "reason"} <= set(schema["required"])
+        assert schema["properties"]["action"]["enum"] == ["BUY", "SELL", "HOLD"]
+        assert "target_weight" in schema["properties"]
         return httpx.Response(
             200,
             json={

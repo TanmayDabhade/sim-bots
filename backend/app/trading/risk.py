@@ -18,10 +18,11 @@ def evaluate_decision(
     portfolio: PortfolioState,
     price: float | None,
     trade_count: int,
+    max_daily_trades: int = MAX_DAILY_TRADES,
 ) -> RiskResult:
     if decision.action == "HOLD":
         return _rejected("model chose HOLD")
-    if trade_count >= MAX_DAILY_TRADES:
+    if trade_count >= max_daily_trades:
         return _rejected("daily trade limit reached")
     if decision.symbol not in ALLOWED_SYMBOLS:
         return _rejected("symbol is outside the arena")

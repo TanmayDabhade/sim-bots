@@ -26,10 +26,11 @@ services:
       GEMMA_MODEL_ID: ${GEMMA_MODEL_ID:-google/gemma-3-12b-it}
       PHI_MODEL_ID: ${PHI_MODEL_ID:-microsoft/phi-4}
       LLAMA_MODEL_ID: ${LLAMA_MODEL_ID:-meta-llama/llama-3.1-8b-instruct}
-      MARKET_PERIOD: ${MARKET_PERIOD:-1mo}
-      MARKET_INTERVAL: ${MARKET_INTERVAL:-15m}
-      ENABLE_SCHEDULER: ${ENABLE_SCHEDULER:-false}
-      ARENA_INTERVAL_MINUTES: ${ARENA_INTERVAL_MINUTES:-15}
+      MARKET_PERIOD: ${MARKET_PERIOD:-5d}
+      MARKET_INTERVAL: ${MARKET_INTERVAL:-1m}
+      ENABLE_SCHEDULER: ${ENABLE_SCHEDULER:-true}
+      ARENA_INTERVAL_MINUTES: ${ARENA_INTERVAL_MINUTES:-1}
+      MAX_DAILY_TRADES: ${MAX_DAILY_TRADES:-390}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
       CORS_ORIGINS: http://localhost:3000
     ports:
@@ -52,4 +53,3 @@ services:
 
 volumes:
   arena-postgres:
-

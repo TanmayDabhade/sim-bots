@@ -83,6 +83,21 @@ describe("ModelPanel", () => {
 
 
 describe("ArenaDashboard", () => {
+  it("explains why an arena with no data is not trading", () => {
+    render(<ArenaDashboard initialData={{
+      ...arena,
+      asOf: null,
+      status: "WAITING",
+      runtime: {
+        schedulerEnabled: false, modelProvider: "demo", modelConfigured: true,
+        marketOpen: true, intervalMinutes: 1, cycleRunning: false,
+        lastError: null, lastStartedAt: null, lastCompletedAt: null, nextRunAt: null,
+      },
+    }} polling={false} />);
+    expect(screen.getByText(/Automatic trading is disabled/)).toBeInTheDocument();
+    expect(screen.getByText(/Demo strategies are active/)).toBeInTheDocument();
+  });
+
   it("renders all four model quadrants", () => {
     render(<ArenaDashboard initialData={arena} polling={false} />);
 
@@ -101,4 +116,3 @@ describe("ArenaDashboard", () => {
     });
   });
 });
-

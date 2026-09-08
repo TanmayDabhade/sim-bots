@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import UTC, datetime, time
 from decimal import Decimal
 from typing import Protocol
@@ -56,6 +58,11 @@ class ArenaService:
         self._market_provider = market_provider
         self._model_provider = model_provider
         self._settings = settings or get_settings()
+        self._cycle_lock = asyncio.Lock()
+        self.cycle_running = False
+        self.last_error: str | None = None
+        self.last_started_at: datetime | None = None
+        self.last_completed_at: datetime | None = None
 
     def _portfolio_state(
         self, portfolio: PortfolioRecord, snapshot: MarketSnapshot, slug: str
@@ -176,6 +183,30 @@ class ArenaService:
         mode: str,
         snapshot: MarketSnapshot | None = None,
     ) -> ArenaRunResult:
+        # Serialize manual and scheduled runs in this process so portfolios cannot race.
+        async with self._cycle_lock:
+            self.cycle_running = True
+            self.last_started_at = datetime.now(UTC)
+            try:
+                result = await self._run_once(at, mode, snapshot)
+                self.last_error = None
+                self.last_completed_at = datetime.now(UTC)
+                return result
+            except DuplicateArenaRunError:
+                raise
+            except Exception:
+                self.last_error = "Market cycle failed. The next scheduled cycle will retry."
+                logging.getLogger(__name__).exception("Arena cycle failed")
+                raise
+            finally:
+                self.cycle_running = False
+
+    async def _run_once(
+        self,
+        at: datetime,
+        mode: str,
+        snapshot: MarketSnapshot | None = None,
+    ) -> ArenaRunResult:
         if at.tzinfo is None:
             at = at.replace(tzinfo=UTC)
         if snapshot is None:
@@ -209,7 +240,7 @@ class ArenaService:
             models = session.scalars(
                 select(ModelProfileRecord).order_by(ModelProfileRecord.id)
             ).all()
-            trade_count = 0
+            prepared = []
             for model in models:
                 portfolio_record = session.scalar(
                     select(PortfolioRecord).where(PortfolioRecord.model_id == model.id)
@@ -223,12 +254,27 @@ class ArenaService:
                     color=model.color,
                     provider_model_id=model.provider_model_id,
                 )
-                call = await self._model_provider.decide(profile, snapshot, state)
+                trades_today = self._trades_today(session, model.id, at)
+                state.trades_remaining_today = max(
+                    0, self._settings.max_daily_trades - trades_today
+                )
+                prepared.append((model, portfolio_record, state, profile, trades_today))
+
+            # Each portfolio is independent; all models receive the same market snapshot.
+            calls = await asyncio.gather(*(
+                self._model_provider.decide(profile, snapshot, state)
+                for _, _, state, profile, _ in prepared
+            ))
+            trade_count = 0
+            for (model, portfolio_record, state, _, trades_today), call in zip(
+                prepared, calls, strict=True
+            ):
                 risk = evaluate_decision(
                     call.decision,
                     state,
                     snapshot.price_for(call.decision.symbol) if call.decision.symbol else None,
-                    self._trades_today(session, model.id, at),
+                    trades_today,
+                    max_daily_trades=self._settings.max_daily_trades,
                 )
                 decision_status = (
                     "error" if call.error else ("approved" if risk.approved else "held")

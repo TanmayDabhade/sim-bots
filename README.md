@@ -17,13 +17,13 @@ runs on your laptop's GPU and the application never places real orders.
 
 - Next.js 16, TypeScript, Tailwind CSS, and Recharts frontend
 - FastAPI, SQLAlchemy, Alembic, and PostgreSQL backend
-- Batched 15-minute Yahoo Finance data for SPY, QQQ, AAPL, MSFT, NVDA,
+- Batched one-minute Yahoo Finance data for SPY, QQQ, AAPL, MSFT, NVDA,
   AMZN, GOOG, META, TSLA, and JPM
 - SMA-20, SMA-50, RSI-14, one-hour change, and one-day change
 - Four independently configured OpenRouter models with strict local response
   validation, one repair attempt, and safe HOLD fallback
-- No leverage, no shorting, 20% maximum position weight, five trades per model
-  per day, and a 2% minimum allocation change
+- No leverage, no shorting, 20% maximum position weight, a configurable daily
+  trade limit (390 per model by default), and a 2% minimum allocation change
 - Three-basis-point adverse simulated slippage, order/trade audit history,
   SPY benchmark, return, P&L, Sharpe, max drawdown, and win rate
 - Historical replay seeding and an NYSE-calendar-aware live scheduler
@@ -64,6 +64,10 @@ Create an OpenRouter key, then change these values in `.env`:
 MODEL_PROVIDER=openrouter
 OPENROUTER_API_KEY=your-key-here
 ENABLE_SCHEDULER=true
+ARENA_INTERVAL_MINUTES=1
+MARKET_INTERVAL=1m
+MARKET_PERIOD=5d
+MAX_DAILY_TRADES=390
 ADMIN_TOKEN=choose-a-long-random-token
 ```
 
@@ -83,8 +87,30 @@ replaced without a code change. Restart the backend after editing `.env`:
 docker compose up --build -d backend frontend
 ```
 
-With the scheduler enabled, the service evaluates only during regular NYSE
-sessions at the configured interval. To trigger a protected cycle manually:
+With the scheduler enabled, the service attempts its first cycle immediately
+at startup and evaluates every minute during regular NYSE sessions, respecting
+holidays and early closes. The four models evaluate concurrently; slow cycles
+do not overlap. A model may choose HOLD on any cycle. Prices are Yahoo bars,
+which may be delayed, not an exchange tick stream. Positions can remain open
+overnight; there is no mandatory closing-bell liquidation.
+
+The dashboard and `/api/v1/arena` expose whether the scheduler is disabled,
+the market is closed, a cycle is running, a cycle failed, or demo rules are active.
+`/ready` also reports the configured provider and scheduler interval.
+
+For Render, set these environment variables on the **backend** and redeploy.
+Existing environment values override the new defaults. Use an always-running
+service and a persistent database. Render Free services sleep after 15 minutes
+without inbound traffic, stopping the in-process scheduler, and local SQLite
+changes are lost on restart. Run exactly **one backend process/replica** with
+the scheduler enabled; its overlap protection is within that process.
+See https://render.com/docs/free for hosting limitations.
+
+At one cycle per minute, four hosted models can make approximately 1,560 primary
+requests in a full 390-minute session, plus any JSON repair requests.
+Historical replay seeding is optional and is not required for live cycles.
+
+To trigger a protected cycle manually:
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/admin/arena/run-once \

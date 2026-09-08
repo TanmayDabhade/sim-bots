@@ -71,6 +71,7 @@ class PortfolioState(BaseModel):
     cash: float = Field(ge=0)
     starting_cash: float = Field(gt=0)
     positions: list[PositionState]
+    trades_remaining_today: int | None = Field(default=None, ge=0)
 
     @property
     def equity(self) -> float:

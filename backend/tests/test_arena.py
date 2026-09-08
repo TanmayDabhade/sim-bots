@@ -1,4 +1,5 @@
-from datetime import UTC, datetime
+import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, func, select
@@ -6,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.arena.service import ArenaService, DuplicateArenaRunError
+from app.config import Settings
 from app.database import Base
 from app.db_models import (
     DecisionRecord,
@@ -126,3 +128,87 @@ async def test_benchmark_starts_with_first_arena_cycle_not_downloaded_history() 
         points = session.scalars(select(EquitySnapshotRecord)).all()
 
     assert {point.benchmark_return_pct for point in points} == {0.0}
+
+
+@pytest.mark.asyncio
+async def test_models_evaluate_same_cycle_concurrently() -> None:
+    arrived: set[str] = set()
+    all_started = asyncio.Event()
+
+    class ConcurrentProvider(DemoModelProvider):
+        async def decide(self, profile, snapshot, portfolio):
+            arrived.add(profile.slug)
+            if len(arrived) == 4:
+                all_started.set()
+            await asyncio.wait_for(all_started.wait(), timeout=1)
+            return await super().decide(profile, snapshot, portfolio)
+
+    service = ArenaService(session_factory(), FakeMarketProvider(), ConcurrentProvider())
+    result = await service.run_once(
+        datetime(2026, 9, 1, 14, 0, tzinfo=UTC), "demo", market_snapshot()
+    )
+    assert result.decision_count == 4
+    assert result.trade_count == 4
+
+
+@pytest.mark.asyncio
+async def test_failed_cycle_exposes_error_and_successful_retry_clears_it() -> None:
+    class UnavailableMarket:
+        async def get_snapshot(self, *args):
+            raise RuntimeError("Upstream unavailable")
+
+    service = ArenaService(session_factory(), UnavailableMarket(), DemoModelProvider())
+    at = datetime(2026, 9, 1, 14, 0, tzinfo=UTC)
+    with pytest.raises(RuntimeError):
+        await service.run_once(at, "live")
+    assert service.last_error is not None
+    assert service.cycle_running is False
+    await service.run_once(at, "live", market_snapshot())
+    assert service.last_error is None
+    assert service.last_completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_overlapping_cycles_serialize_and_observe_updated_portfolios() -> None:
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    second_started = asyncio.Event()
+    first_time = datetime(2026, 9, 1, 14, 0, tzinfo=UTC)
+    budgets: list[int | None] = []
+
+    class GatedProvider(DemoModelProvider):
+        async def decide(self, profile, snapshot, portfolio):
+            budgets.append(portfolio.trades_remaining_today)
+            if snapshot.as_of == first_time:
+                first_started.set()
+                await release_first.wait()
+            else:
+                second_started.set()
+                assert portfolio.cash < 100_000
+            return await super().decide(profile, snapshot, portfolio)
+
+    factory = session_factory()
+    service = ArenaService(
+        factory, FakeMarketProvider(), GatedProvider(), Settings(max_daily_trades=1)
+    )
+    second_snapshot = market_snapshot().model_copy(
+        update={"as_of": first_time + timedelta(minutes=1)}
+    )
+    first = asyncio.create_task(service.run_once(first_time, "live", market_snapshot()))
+    second = None
+    try:
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        second = asyncio.create_task(
+            service.run_once(second_snapshot.as_of, "live", second_snapshot)
+        )
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(second_started.wait(), timeout=0.05)
+        release_first.set()
+        results = await asyncio.gather(first, second)
+        assert [result.trade_count for result in results] == [4, 0]
+        assert budgets == [1, 1, 1, 1, 0, 0, 0, 0]
+        with factory() as session:
+            assert session.scalar(select(func.count()).select_from(DecisionRecord)) == 8
+    finally:
+        release_first.set()
+        await asyncio.gather(first, *([second] if second else []), return_exceptions=True)

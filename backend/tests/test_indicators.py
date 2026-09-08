@@ -46,3 +46,12 @@ def test_snapshot_marks_indicators_unavailable_without_enough_bars() -> None:
 def test_snapshot_rejects_empty_frames() -> None:
     with pytest.raises(ValueError, match="AAPL has no usable bars"):
         build_symbol_snapshot(pd.DataFrame(), "AAPL")
+
+
+def test_one_minute_bars_keep_one_hour_and_one_session_change_horizons() -> None:
+    frame = price_frame(400)
+    frame.index = pd.date_range("2026-08-03 13:30", periods=400, freq="1min", tz=UTC)
+    snapshot = build_symbol_snapshot(frame, "NVDA")
+
+    assert snapshot.change_1h == pytest.approx(400 / 340 - 1)
+    assert snapshot.change_1d == pytest.approx(400 / 10 - 1)

@@ -49,6 +49,18 @@ export interface ModelArena {
 }
 
 export interface ArenaResponse {
+  runtime?: {
+    schedulerEnabled: boolean;
+    modelProvider: "demo" | "openrouter";
+    modelConfigured: boolean;
+    marketOpen: boolean;
+    intervalMinutes: number;
+    cycleRunning: boolean;
+    lastStartedAt: string | null;
+    lastCompletedAt: string | null;
+    lastError: string | null;
+    nextRunAt: string | null;
+  };
   asOf: string | null;
   status: ArenaStatus;
   mode: string | null;
@@ -67,4 +79,3 @@ export interface TradeMarker {
   symbol: string;
   price: number;
 }
-

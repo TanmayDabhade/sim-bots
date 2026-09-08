@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from time import monotonic, sleep
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -52,7 +54,7 @@ class FakeMarketProvider:
         return snapshot()
 
 
-def app_client(admin_token: str = "") -> TestClient:
+def app_client(admin_token: str = "", enable_scheduler: bool = False) -> TestClient:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -64,7 +66,7 @@ def app_client(admin_token: str = "") -> TestClient:
         database_url="sqlite+pysqlite:///:memory:",
         model_provider="demo",
         admin_token=admin_token,
-        enable_scheduler=False,
+        enable_scheduler=enable_scheduler,
     )
     app = create_app(
         settings=settings,
@@ -83,6 +85,29 @@ def test_health_and_readiness_report_demo_mode() -> None:
     assert readiness.status_code == 200
     assert readiness.json()["status"] == "ready"
     assert readiness.json()["modelProvider"] == "demo"
+
+
+def test_empty_arena_explains_disabled_scheduler_and_demo_provider() -> None:
+    with app_client() as client:
+        payload = client.get("/api/v1/arena").json()
+    assert payload["status"] == "WAITING"
+    assert payload["runtime"]["schedulerEnabled"] is False
+    assert payload["runtime"]["modelProvider"] == "demo"
+    assert payload["runtime"]["cycleRunning"] is False
+
+
+def test_startup_scheduler_creates_first_points_without_admin_or_seed() -> None:
+    with patch("app.arena.scheduler.is_market_open", return_value=True):
+        with app_client(enable_scheduler=True) as client:
+            deadline = monotonic() + 3
+            while True:
+                payload = client.get("/api/v1/arena").json()
+                if payload["asOf"] is not None or monotonic() >= deadline:
+                    break
+                sleep(0.01)
+    assert all(len(model["series"]) == 1 for model in payload["models"])
+    assert payload["runtime"]["schedulerEnabled"] is True
+    assert payload["runtime"]["lastCompletedAt"] is not None
 
 
 def test_arena_endpoint_returns_four_models_after_run() -> None:

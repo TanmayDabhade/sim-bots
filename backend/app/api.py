@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.arena.scheduler import start_scheduler
+from app.arena.scheduler import is_market_open, start_scheduler
 from app.arena.service import ArenaService, DuplicateArenaRunError, MarketProvider
 from app.config import Settings, get_settings
 from app.database import get_engine
@@ -235,12 +235,30 @@ def create_app(
             "database": "connected",
             "modelProvider": active_settings.model_provider,
             "marketProvider": "yfinance",
+            "schedulerEnabled": active_settings.enable_scheduler,
+            "intervalMinutes": active_settings.arena_interval_minutes,
         }
 
     @app.get("/api/v1/arena")
     def arena(window: str = Query(default="1w", alias="range")) -> dict[str, Any]:
         with factory() as session:
-            return _arena_payload(session, window)
+            payload = _arena_payload(session, window)
+        job = scheduler.get_job("arena-cycle") if scheduler is not None else None
+        payload["runtime"] = {
+            "schedulerEnabled": active_settings.enable_scheduler,
+            "modelProvider": active_settings.model_provider,
+            "modelConfigured": (
+                active_settings.model_provider == "demo" or bool(active_settings.openrouter_api_key)
+            ),
+            "marketOpen": is_market_open(datetime.now(UTC)),
+            "intervalMinutes": active_settings.arena_interval_minutes,
+            "cycleRunning": service.cycle_running,
+            "lastStartedAt": service.last_started_at,
+            "lastCompletedAt": service.last_completed_at,
+            "lastError": service.last_error,
+            "nextRunAt": job.next_run_time if job is not None else None,
+        }
+        return payload
 
     @app.get("/api/v1/market/snapshot")
     async def market_snapshot() -> dict[str, Any]:

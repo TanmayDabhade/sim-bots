@@ -18,7 +18,7 @@ def is_market_open(at: datetime) -> bool:
         return False
     opened = pd.Timestamp(schedule.iloc[0]["market_open"]).to_pydatetime()
     closed = pd.Timestamp(schedule.iloc[0]["market_close"]).to_pydatetime()
-    return bool(opened <= aware <= closed)
+    return bool(opened <= aware < closed)
 
 
 def start_scheduler(service: ArenaService, interval_minutes: int) -> AsyncIOScheduler:
@@ -40,6 +40,7 @@ def start_scheduler(service: ArenaService, interval_minutes: int) -> AsyncIOSche
         id="arena-cycle",
         coalesce=True,
         max_instances=1,
+        next_run_time=datetime.now(UTC),
     )
     scheduler.start()
     return scheduler

@@ -60,10 +60,19 @@ export function ArenaDashboard({
     return (
       <main className="state-screen error-state">
         <h1>Arena data is unavailable</h1>
-        <p>Start the FastAPI service and run the seed command, then refresh this page.</p>
+        <p>The trading service may be starting up. This page will retry automatically.</p>
       </main>
     );
   }
+
+  const runtime = data.runtime;
+  const cycleMessage = !runtime ? null
+    : !runtime.schedulerEnabled ? "Automatic trading is disabled. Enable it in the backend settings."
+    : !runtime.modelConfigured ? "Hosted models need an API key before they can make decisions."
+    : runtime.cycleRunning ? "Evaluating the market and model decisions…"
+    : runtime.lastError ? runtime.lastError
+    : !runtime.marketOpen ? "Market closed. Automatic trading resumes during the next NYSE session."
+    : `Trading loop active · Evaluating every ${runtime.intervalMinutes} minute${runtime.intervalMinutes === 1 ? "" : "s"}.`;
 
   return (
     <main className="arena-shell">
@@ -85,6 +94,10 @@ export function ArenaDashboard({
       </header>
 
       {error ? <p className="stale-banner">Refresh failed. Showing the last successful update.</p> : null}
+      {cycleMessage ? <p className="stale-banner" role="status">{cycleMessage}</p> : null}
+      {runtime?.modelProvider === "demo" ? (
+        <p className="stale-banner">Demo strategies are active. Hosted model reasoning is not enabled.</p>
+      ) : null}
 
       <section className="arena-grid" aria-label="Model performance arena">
         {data.models.map((model) => <ModelPanel key={model.id} model={model} />)}
@@ -97,4 +110,3 @@ export function ArenaDashboard({
     </main>
   );
 }
-
