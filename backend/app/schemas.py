@@ -47,8 +47,12 @@ class ModelDecision(BaseModel):
     @model_validator(mode="after")
     def validate_action_fields(self) -> ModelDecision:
         if self.action == "HOLD":
-            if self.symbol is not None or self.target_weight is not None:
-                raise ValueError("HOLD must not include a symbol or target weight")
+            # Small models routinely echo the symbol they considered, or a zero
+            # weight, alongside a HOLD. The intent is unambiguous and the fields
+            # are unused downstream, so normalize rather than discard an
+            # otherwise valid decision and spend a repair request on it.
+            self.symbol = None
+            self.target_weight = None
             return self
         if self.symbol is None or self.target_weight is None:
             raise ValueError(f"{self.action} requires a symbol and target weight")

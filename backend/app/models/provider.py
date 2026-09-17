@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
+from collections.abc import Iterator
 from typing import Any, Protocol
 
 import httpx
@@ -15,6 +17,9 @@ from app.schemas import (
     PortfolioState,
     SymbolSnapshot,
 )
+
+_LOGGER = logging.getLogger(__name__)
+_LOG_EXCERPT_LIMIT = 500
 
 
 class ModelProvider(Protocol):
@@ -40,18 +45,82 @@ def _hold(reason: str, error: str | None = None, latency_ms: int = 0) -> ModelCa
     )
 
 
+def _json_object_candidates(text: str) -> Iterator[str]:
+    """Yield each balanced ``{...}`` span, ignoring braces inside string literals."""
+    index = 0
+    while (start := text.find("{", index)) != -1:
+        depth = 0
+        in_string = False
+        escaped = False
+        end = -1
+        for position in range(start, len(text)):
+            char = text[position]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    end = position
+                    break
+        if end == -1:
+            return
+        yield text[start : end + 1]
+        index = end + 1
+
+
 def _content_as_json(content: Any) -> str:
+    """Pull the decision object out of a reply that may carry prose or fences.
+
+    A provider that does not honour ``response_format`` wraps the object in a
+    code fence, or leads with reasoning before it. Scanning for the first
+    balanced object carrying an ``action`` key survives both without spending a
+    repair round trip, and skips a ``<think>`` block that contains its own
+    braces.
+    """
     if isinstance(content, dict):
         return json.dumps(content)
     if not isinstance(content, str):
         raise ValueError("model response content is not text or JSON")
-    stripped = content.strip()
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        stripped = "\n".join(lines[1:-1])
-        if stripped.lstrip().startswith("json"):
-            stripped = stripped.lstrip()[4:].lstrip()
-    return stripped
+    fallback: str | None = None
+    for candidate in _json_object_candidates(content):
+        try:
+            parsed = json.loads(candidate)
+        except ValueError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if "action" in parsed:
+            return candidate
+        if fallback is None:
+            fallback = candidate
+    if fallback is None:
+        raise ValueError("model response contains no complete JSON object")
+    return fallback
+
+
+def _response_content(body: dict[str, Any]) -> Any:
+    """Best-effort read of the reply text, for logging a failure we could not parse."""
+    try:
+        return body["choices"][0]["message"]["content"]
+    except (KeyError, TypeError, IndexError):
+        return None
+
+
+def _for_log(content: Any) -> str:
+    if content is None:
+        return "<no content>"
+    text = content if isinstance(content, str) else repr(content)
+    return text[:_LOG_EXCERPT_LIMIT] + ("..." if len(text) > _LOG_EXCERPT_LIMIT else "")
 
 
 class _TruncatedModelResponse(ValueError):
@@ -91,11 +160,14 @@ class OpenRouterModelProvider:
                 "messages": messages,
                 "temperature": 0,
                 "max_tokens": max_tokens,
-                # All four configured OpenRouter models support JSON mode. Some
-                # providers do not enforce JSON Schema, so validation remains
-                # local and malformed responses receive one repair attempt.
+                # JSON mode is a hint, not a guarantee: providers vary in whether
+                # they enforce it, so validation stays local and a malformed
+                # reply gets one repair attempt. Deliberately no
+                # "require_parameters" here, since it drops every provider that
+                # does not advertise JSON mode and can leave a small model with
+                # no route at all, turning the whole cycle into a 404.
                 "response_format": {"type": "json_object"},
-                "provider": {"require_parameters": True, "allow_fallbacks": True},
+                "provider": {"allow_fallbacks": True},
             },
         )
         response.raise_for_status()
@@ -115,9 +187,11 @@ class OpenRouterModelProvider:
             )
         started = time.perf_counter()
         messages = build_messages(snapshot, portfolio)
+        last_content: Any = None
         try:
             try:
                 body = await self._request(profile.provider_model_id, messages)
+                last_content = _response_content(body)
                 decision = _decision_from_response(body)
             except (ValueError, KeyError, TypeError, IndexError):
                 # Start from the original state so malformed prose and partial
@@ -137,6 +211,7 @@ class OpenRouterModelProvider:
                 body = await self._request(
                     profile.provider_model_id, repair_messages, max_tokens=2048,
                 )
+                last_content = _response_content(body)
                 decision = _decision_from_response(body)
 
             usage = body.get("usage") or {}
@@ -155,6 +230,11 @@ class OpenRouterModelProvider:
             )
         except _TruncatedModelResponse:
             elapsed = int((time.perf_counter() - started) * 1000)
+            _LOGGER.warning(
+                "%s hit its output limit twice; raising max_tokens or disabling "
+                "reasoning output may be required",
+                profile.provider_model_id,
+            )
             return _hold(
                 "The hosted model response was cut off, so no trade was placed.",
                 error="Hosted model response exceeded its output limit after one retry.",
@@ -162,6 +242,14 @@ class OpenRouterModelProvider:
             )
         except (KeyError, TypeError, ValueError, IndexError):
             elapsed = int((time.perf_counter() - started) * 1000)
+            # provider_error is public API, so it stays short; the raw reply goes
+            # to the log, where it is the only way to tell a schema violation
+            # from prose that never contained a decision at all.
+            _LOGGER.warning(
+                "%s returned an unparsable decision; raw content: %s",
+                profile.provider_model_id,
+                _for_log(last_content),
+            )
             return _hold(
                 "The hosted model returned an unusable response, so no trade was placed.",
                 error="Hosted model returned an invalid decision after one retry.",
@@ -169,6 +257,18 @@ class OpenRouterModelProvider:
             )
         except httpx.HTTPError as exc:
             elapsed = int((time.perf_counter() - started) * 1000)
+            # The status alone cannot distinguish a retired model id from a
+            # routing rejection; OpenRouter explains which in the response body.
+            response = getattr(exc, "response", None)
+            if response is None:
+                _LOGGER.warning("%s request failed: %s", profile.provider_model_id, exc)
+            else:
+                _LOGGER.warning(
+                    "%s request failed: %s | response body: %s",
+                    profile.provider_model_id,
+                    exc,
+                    _for_log(response.text),
+                )
             return _hold(
                 "The hosted model returned an unusable response, so no trade was placed.",
                 error=f"hosted model failure: {exc}",
