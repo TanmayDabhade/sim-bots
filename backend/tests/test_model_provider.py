@@ -258,3 +258,145 @@ async def test_demo_models_produce_valid_model_specific_decisions() -> None:
 
     assert all(result.error is None for result in results)
     assert {result.decision.target_weight for result in results} == {0.08, 0.1, 0.12, 0.15}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(
+            '```json\n{"action":"HOLD","symbol":null,"target_weight":null,'
+            '"confidence":0.5,"reason":"Flat."}\n```',
+            id="fenced-multiline",
+        ),
+        pytest.param(
+            '```json {"action":"HOLD","symbol":null,"target_weight":null,'
+            '"confidence":0.5,"reason":"Flat."} ```',
+            id="fenced-single-line",
+        ),
+        pytest.param(
+            'Let me think. RSI is 55, so nothing is compelling.\n'
+            '{"action":"HOLD","symbol":null,"target_weight":null,'
+            '"confidence":0.5,"reason":"Flat."}',
+            id="prose-preamble",
+        ),
+        pytest.param(
+            '<think>Compare {SPY} against {QQQ} first.</think>'
+            '{"action":"HOLD","symbol":null,"target_weight":null,'
+            '"confidence":0.5,"reason":"Flat."}',
+            id="reasoning-block-with-braces",
+        ),
+        pytest.param(
+            '{"action":"HOLD","symbol":null,"target_weight":null,'
+            '"confidence":0.5,"reason":"Flat."}\nHope that helps!',
+            id="trailing-prose",
+        ),
+    ],
+)
+async def test_openrouter_extracts_json_without_spending_a_repair(content: str) -> None:
+    calls = 0
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"choices": [{
+            "finish_reason": "stop", "message": {"content": content},
+        }]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await OpenRouterModelProvider("secret", client=client).decide(
+            profile(), snapshot(), portfolio(),
+        )
+
+    assert calls == 1
+    assert result.decision.action == "HOLD"
+    assert result.error is None
+
+
+@pytest.mark.asyncio
+async def test_openrouter_normalizes_a_hold_that_carries_a_symbol() -> None:
+    calls = 0
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"choices": [{
+            "finish_reason": "stop",
+            "message": {"content": json.dumps({
+                "action": "HOLD", "symbol": "SPY", "target_weight": 0,
+                "confidence": 0.4, "reason": "Waiting for confirmation.",
+            })},
+        }]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await OpenRouterModelProvider("secret", client=client).decide(
+            profile(), snapshot(), portfolio(),
+        )
+
+    assert calls == 1
+    assert result.error is None
+    assert result.decision.action == "HOLD"
+    assert result.decision.symbol is None
+    assert result.decision.target_weight is None
+
+
+@pytest.mark.asyncio
+async def test_openrouter_does_not_restrict_routing_to_json_capable_providers() -> None:
+    bodies: list[dict] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{
+            "finish_reason": "stop",
+            "message": {"content": json.dumps({
+                "action": "HOLD", "symbol": None, "target_weight": None,
+                "confidence": 0.5, "reason": "Flat.",
+            })},
+        }]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await OpenRouterModelProvider("secret", client=client).decide(
+            profile(), snapshot(), portfolio(),
+        )
+
+    assert "require_parameters" not in bodies[0]["provider"]
+
+
+@pytest.mark.asyncio
+async def test_openrouter_logs_the_response_body_behind_an_http_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={
+            "error": {"message": "No allowed providers are available for the selected model."},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with caplog.at_level("WARNING"):
+            result = await OpenRouterModelProvider("secret", client=client).decide(
+                profile(), snapshot(), portfolio(),
+            )
+
+    assert result.decision.action == "HOLD"
+    assert "No allowed providers" in caplog.text
+    assert "vendor/qwen" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_openrouter_logs_raw_content_when_parsing_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{
+            "finish_reason": "stop",
+            "message": {"content": "I am unable to decide right now."},
+        }]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with caplog.at_level("WARNING"):
+            result = await OpenRouterModelProvider("secret", client=client).decide(
+                profile(), snapshot(), portfolio(),
+            )
+
+    assert result.error == "Hosted model returned an invalid decision after one retry."
+    assert "I am unable to decide right now." in caplog.text
